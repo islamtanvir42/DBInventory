@@ -22,29 +22,25 @@ import {
   isOverCapacity,
   latestByDatabase,
   majorVersionLabel,
+  platformLabel,
 } from "@/lib/inventory";
-import {
-  getDatabases,
-  getLatestMetrics,
-  getScanLog,
-  getServers,
-} from "@/lib/inventory.functions";
+import { getDatabases, getLatestMetrics, getScanLog, getServers } from "@/lib/inventory.functions";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({
     meta: [
-      { title: "Database Inventory — Oracle Estate Overview" },
+      { title: "Database Inventory — Multi-Platform Estate Overview" },
       {
         name: "description",
         content:
-          "Internal dashboard tracking Oracle databases across servers, operating systems and prod/uat/dev environments, with version history and scan status.",
+          "Internal dashboard tracking Oracle, SQL Server and PostgreSQL databases across servers, operating systems and dev/sit/uat/prod environments, with version history and scan status.",
       },
-      { property: "og:title", content: "Database Inventory — Oracle Estate Overview" },
+      { property: "og:title", content: "Database Inventory — Multi-Platform Estate Overview" },
       {
         property: "og:description",
         content:
-          "Track Oracle databases across servers, OS families and environments, with end-of-life flags and scan coverage.",
+          "Track Oracle, SQL Server and PostgreSQL databases across servers, OS families, environments and RAC/cluster topology, with end-of-life flags and scan coverage.",
       },
     ],
   }),
@@ -88,6 +84,7 @@ function Overview() {
   const [search, setSearch] = useState("");
   const [environment, setEnvironment] = useState("all");
   const [status, setStatus] = useState("all");
+  const [platform, setPlatform] = useState("all");
 
   const rows = databases.data ?? [];
   const serverRows = servers.data ?? [];
@@ -134,21 +131,21 @@ function Overview() {
     ];
   }, [rows, latest]);
 
-  const outdated = rows.filter((r) => isEndOfLife(r.oracle_version)).length;
+  const outdated = rows.filter((r) => isEndOfLife(r.platform, r.db_version)).length;
+  const racCount = rows.filter((r) => r.is_rac).length;
 
-  const byVersion = useMemo(() => {
+  const byPlatform = useMemo(() => {
     const counts = new Map<string, number>();
-    rows.forEach((r) => counts.set(r.oracle_version, (counts.get(r.oracle_version) ?? 0) + 1));
+    rows.forEach((r) => counts.set(r.platform, (counts.get(r.platform) ?? 0) + 1));
     const data = [...counts.entries()]
-      .map(([label, value]) => ({ label, value, warn: isEndOfLife(label) }))
-      .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label));
+      .map(([platform, value]) => ({ label: platformLabel(platform), value }))
+      .sort((a, b) => b.value - a.value);
     if (data.length > 0) return data;
     // Dummy values so the chart renders while no inventory is loaded
     return [
-      { label: "19.0.0", value: 8 },
-      { label: "21.0.0", value: 4 },
-      { label: "12.2.0", value: 5, warn: true },
-      { label: "11.2.0", value: 3, warn: true },
+      { label: "Oracle", value: 15 },
+      { label: "SQL Server", value: 3 },
+      { label: "PostgreSQL", value: 3 },
     ];
   }, [rows]);
 
@@ -178,7 +175,8 @@ function Overview() {
       (r.servers?.hostname ?? "").toLowerCase().includes(term);
     const matchesEnv = environment === "all" || r.servers?.environment === environment;
     const matchesStatus = status === "all" || r.status === status;
-    return matchesTerm && matchesEnv && matchesStatus;
+    const matchesPlatform = platform === "all" || r.platform === platform;
+    return matchesTerm && matchesEnv && matchesStatus && matchesPlatform;
   });
 
   return (
@@ -187,7 +185,9 @@ function Overview() {
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-6 py-4">
           <div>
             <h1 className="text-lg font-semibold tracking-tight">Database Inventory</h1>
-            <p className="text-xs text-muted-foreground">Oracle estate across all environments</p>
+            <p className="text-xs text-muted-foreground">
+              Oracle, SQL Server and PostgreSQL estate across all environments
+            </p>
           </div>
           <div className="flex items-center gap-6">
             <div className="text-right">
@@ -214,7 +214,7 @@ function Overview() {
           <SummaryCard
             label="Outdated versions"
             value={outdated}
-            hint="On an end-of-life Oracle release"
+            hint="On an end-of-life release"
             tone="warning"
           />
           <SummaryCard
@@ -230,6 +230,11 @@ function Overview() {
             {...(expiringDbs.length + expiringServers.length > 0
               ? { tone: "warning" as const }
               : {})}
+          />
+          <SummaryCard
+            label="RAC / cluster"
+            value={racCount}
+            hint="Databases running as RAC/cluster"
           />
         </div>
 
@@ -249,7 +254,9 @@ function Overview() {
                     {r.instance_name}
                   </Link>
                   <span className="text-muted-foreground">database</span>
-                  <StatusBadge tone={expiryState(r.expiry_date) === "expired" ? "danger" : "warning"}>
+                  <StatusBadge
+                    tone={expiryState(r.expiry_date) === "expired" ? "danger" : "warning"}
+                  >
                     {expiryBadgeLabel(r.expiry_date)}
                   </StatusBadge>
                   <span className="tech text-xs text-muted-foreground">
@@ -261,7 +268,9 @@ function Overview() {
                 <li key={s.id} className="flex flex-wrap items-center gap-2">
                   <span className="tech font-medium">{s.hostname}</span>
                   <span className="text-muted-foreground">server</span>
-                  <StatusBadge tone={expiryState(s.expiry_date) === "expired" ? "danger" : "warning"}>
+                  <StatusBadge
+                    tone={expiryState(s.expiry_date) === "expired" ? "danger" : "warning"}
+                  >
                     {expiryBadgeLabel(s.expiry_date)}
                   </StatusBadge>
                   <span className="tech text-xs text-muted-foreground">
@@ -275,9 +284,9 @@ function Overview() {
 
         <div className="grid gap-4 lg:grid-cols-3">
           <BarPanel
-            title="Databases by Oracle version"
-            subtitle="Amber marks end-of-life releases"
-            data={byVersion}
+            title="Databases by platform"
+            subtitle="Oracle / SQL Server / PostgreSQL"
+            data={byPlatform}
           />
           <BarPanel title="Databases by OS family" subtitle="Host operating system" data={byOs} />
           <BarPanel
@@ -295,6 +304,17 @@ function Overview() {
               placeholder="Search instance or hostname…"
               className="tech h-9 max-w-xs text-sm"
             />
+            <Select value={platform} onValueChange={setPlatform}>
+              <SelectTrigger className="h-9 w-40 text-sm">
+                <SelectValue placeholder="Platform" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All platforms</SelectItem>
+                <SelectItem value="oracle">Oracle</SelectItem>
+                <SelectItem value="mssql">SQL Server</SelectItem>
+                <SelectItem value="postgresql">PostgreSQL</SelectItem>
+              </SelectContent>
+            </Select>
             <Select value={environment} onValueChange={setEnvironment}>
               <SelectTrigger className="h-9 w-40 text-sm">
                 <SelectValue placeholder="Environment" />
@@ -303,6 +323,7 @@ function Overview() {
                 <SelectItem value="all">All environments</SelectItem>
                 <SelectItem value="prod">prod</SelectItem>
                 <SelectItem value="uat">uat</SelectItem>
+                <SelectItem value="sit">sit</SelectItem>
                 <SelectItem value="dev">dev</SelectItem>
               </SelectContent>
             </Select>
@@ -327,7 +348,9 @@ function Overview() {
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-2 font-medium">Instance</th>
                   <th className="px-4 py-2 font-medium">Hostname</th>
-                  <th className="px-4 py-2 font-medium">Oracle version</th>
+                  <th className="px-4 py-2 font-medium">Platform</th>
+                  <th className="px-4 py-2 font-medium">Version</th>
+                  <th className="px-4 py-2 font-medium">RAC / Cluster</th>
                   <th className="px-4 py-2 font-medium">OS family</th>
                   <th className="px-4 py-2 font-medium">Environment</th>
                   <th className="px-4 py-2 font-medium">Expiry</th>
@@ -337,19 +360,19 @@ function Overview() {
               <tbody>
                 {databases.isLoading ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                    <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
                       Loading inventory…
                     </td>
                   </tr>
                 ) : filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                    <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
                       No databases match these filters.
                     </td>
                   </tr>
                 ) : (
                   filtered.map((r) => {
-                    const eol = isEndOfLife(r.oracle_version);
+                    const eol = isEndOfLife(r.platform, r.db_version);
                     return (
                       <tr
                         key={r.id}
@@ -371,22 +394,30 @@ function Overview() {
                         <td className="tech px-4 py-2.5 text-muted-foreground">
                           {r.servers?.hostname ?? "—"}
                         </td>
+                        <td className="px-4 py-2.5">{platformLabel(r.platform)}</td>
                         <td className="px-4 py-2.5">
                           <span className={cn("tech", eol && "font-medium text-warning")}>
-                            {r.oracle_version}
+                            {r.db_version}
                           </span>
                           {eol ? (
                             <span className="ml-2 text-xs text-warning">
-                              EOL ({majorVersionLabel(r.oracle_version)})
+                              EOL ({majorVersionLabel(r.platform, r.db_version)})
                             </span>
                           ) : null}
                         </td>
+                        <td className="px-4 py-2.5">
+                          {r.is_rac ? (
+                            <StatusBadge mono tone="info">
+                              {r.cluster_name ?? "RAC"}
+                              {r.node_count ? ` · ${r.node_count}n` : ""}
+                            </StatusBadge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Standalone</span>
+                          )}
+                        </td>
                         <td className="px-4 py-2.5">{r.servers?.os_family ?? "—"}</td>
                         <td className="px-4 py-2.5">
-                          <StatusBadge
-                            mono
-                            tone={environmentTone(r.servers?.environment ?? "dev")}
-                          >
+                          <StatusBadge mono tone={environmentTone(r.servers?.environment ?? "dev")}>
                             {r.servers?.environment ?? "—"}
                           </StatusBadge>
                         </td>
